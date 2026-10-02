@@ -1,0 +1,8 @@
+.pio/
+build/
+__pycache__/
+web/flash/firmware*.bin
+web/flash/build.json
+web/flash/globe.png
+.vscode/
+.DS_Store

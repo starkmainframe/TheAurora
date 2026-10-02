@@ -1,0 +1,70 @@
+name: Build firmware and publish web flasher
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: theaurora-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio/libdeps
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - name: Install PlatformIO
+        run: python -m pip install platformio==6.2.0
+      - name: Build both boards
+        run: pio run -e esp32-s3-amoled-143 -e esp32-s3-amoled-175
+      - name: Native parser and headless globe tests
+        run: python tools/test_host.py
+      - name: Flasher and location tests
+        run: node tests/web.mjs
+      - name: Merge and verify both flash images
+        run: python tools/package_firmware.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-and-render
+          path: |
+            web/flash/firmware-*.bin
+            web/flash/build.json
+            build/globe.png
+            .pio/build/*/firmware.elf
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: web
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
