@@ -1,6 +1,6 @@
 # TheAurora
 
-Round aurora forecast for the Waveshare **ESP32-S3-Touch-AMOLED-1.43** (466×466 CO5300, FT3168 touch). Visual cousin of [capsule-radar](https://github.com/socquique/capsule-radar): browser web flasher, captive WiFi setup, on-device config page.
+Round aurora forecast for Waveshare **ESP32-S3-Touch-AMOLED-1.43** and **1.75** (round AMOLED + touch). Visual cousin of [capsule-radar](https://github.com/socquique/capsule-radar): browser web flasher, captive WiFi setup, on-device config page.
 
 Owner: Christian Reese (`starkmainframe`). Built for home use (Schenefeld / wherever the phone sets the pin).
 
@@ -12,7 +12,7 @@ North-hemisphere NOAA OVATION aurora, drawn as a circular Earth that fills the r
 
 1. **Globe** (home): northern hemisphere, polar-ish view, aurora energy as green→yellow→red, location pin, HUD with Kp + local probability.
 2. **Kp**: current planetary K-index, 3-hour bars for the last day, simple “quiet / unsettled / storm” label.
-3. **Here**: probability at the saved coordinates (big %), lat/lon, forecast time, “worth going outside” hint from Kp + local %.
+3. **Here**: probability at the saved coordinates (big %, lat/lon, forecast time, “worth going outside” hint from Kp + local %.
 
 Long-press optional later; v1 is swipe only.
 
@@ -27,31 +27,34 @@ Long-press optional later; v1 is swipe only.
 
 - Grid: `https://services.swpc.noaa.gov/json/ovation_aurora_latest.json`
   - Format: `{ Observation Time, Forecast Time, Data Format: "[Longitude, Latitude, Aurora]", coordinates: [[lon, lat, energy], ...] }`
-  - Grid is 1°. Energy is approximate deposition (the color bar on the SWPC still, roughly 0–4+). Render **northern latitudes only** (lat ≥ 0, or ≥ 40 to save RAM if needed).
+  - Grid is 1°. The JSON Aurora value uses a 0–100 intensity/probability scale; do not rescale it as 0–4 energy. Render **northern latitudes only** (lat ≥ 0).
   - Do **not** download `images/animations/ovation/north/latest.jpg` on device (too heavy). Draw the grid ourselves so the pin and local % stay consistent.
-- Kp: `https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json` (array of `{time_tag, Kp, a_running, station_count}`).
+- Kp: `https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json` (array of `{time_tag, Kp, a_running, station_count}`; also accept the header-row table format).
 - Local probability: nearest grid cell(s) to saved lat/lon (bilinear if cheap). Show that number on Globe HUD and Here view.
 - Cache last good payload; if WiFi fails, keep last frame and mark stale.
 
-### Hardware (v1 only 1.43)
+### Hardware (1.43 and 1.75)
 
-Reuse capsule-radar’s confirmed 1.43 pin map (do not guess):
+Both Waveshare ESP32-S3 round AMOLED boards, same pattern as capsule-radar: separate PlatformIO envs + web-flasher board picker. Reuse capsule-radar’s confirmed pin maps (do not guess).
 
-| | 1.43 |
-|---|---|
-| Env | `esp32-s3-amoled-143` |
-| QSPI CS / SCLK / D0–D3 | 9 / 10 / 11,12,13,14 |
-| LCD reset | 21 |
-| I2C SDA / SCL | 47 / 48 |
-| Touch | FT3168 @ 0x38 |
+| | 1.43 | 1.75 |
+|---|---|---|
+| Env | `esp32-s3-amoled-143` | `esp32-s3-amoled-175` |
+| Panel | 466×466 CO5300 | 466×466 CO5300 |
+| Touch | FT3168 @ 0x38 | CST9217 @ 0x5A |
+| QSPI CS / SCLK / D0–D3 | 9 / 10 / 11,12,13,14 | 12 / 38 / 4,5,6,7 |
+| LCD reset | 21 | 39 |
+| I2C SDA / SCL | 47 / 48 | 15 / 14 |
+| Touch reset / interrupt | shared LCD reset / none | 40 / 11 |
+| Touch mirror X/Y | no / no | yes / yes |
 
-No battery gauge / no speaker on 1.43 (capsule-radar notes). 1.75 can wait.
+Battery reporting and audio remain out of scope on both boards. The 1.43 has no speaker or PMIC. Use separate firmware images; the pin maps are not interchangeable.
 
 Reference firmware (ideas + pins, **do not copy their ADS-B code or assets wholesale**): https://github.com/socquique/capsule-radar — MIT, keep notices if any snippet is reused. Prefer a clean project that mirrors their *shape*: PlatformIO, LVGL, board header, captive portal, config page, ESP Web Tools flasher, GitHub Actions pages.
 
 ### Web flasher
 
-ESP Web Tools, Chrome/Edge, board picker can be a single 1.43 image for v1. GitHub Pages via Actions on `main` (same idea as capsule-radar `.github/workflows/webflasher.yml`). README: enable Pages → GitHub Actions once.
+ESP Web Tools, Chrome/Edge, **board picker with 1.43″ and 1.75″** (like capsule-radar). Build both envs in CI; GitHub Pages via Actions on `main`. README: enable Pages → GitHub Actions once.
 
 ### Look
 
@@ -59,15 +62,15 @@ Dark, round, coastlines subtle, aurora glow (not a flat heatmap blob). Clock/Kp 
 
 ### Out of scope for v1
 
-Southern hemisphere, GPS module, audio alerts, 1.75 board, 3D case.
+Southern hemisphere, GPS module, audio alerts, battery reporting, 3D case.
 
 ## Done when
 
-- `pio run -e esp32-s3-amoled-143` builds.
+- `pio run -e esp32-s3-amoled-143` and `-e esp32-s3-amoled-175` both build.
 - Desktop/native sim or a documented headless render test for the globe from a saved JSON fixture.
 - README: flash (USB + web flasher), WiFi setup, set location from phone, swipe map.
-- Pushed to `main` on this repo.
-- Vier-Augen (Grok reviewer, not Astra) before calling it done.
+- Separate Vier-Augen by Grok after the builder’s green build/tests, before pushing `main`.
+- Pushed to `main` on this repo after that review passes.
 
 ## Closeout
 

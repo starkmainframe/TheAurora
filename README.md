@@ -1,14 +1,14 @@
 # TheAurora
 
-Aurora forecast on a round Waveshare ESP32-S3 1.43″ AMOLED.
+Aurora forecast on Waveshare ESP32-S3 round AMOLED (1.43″ and 1.75″).
 
-Northern-hemisphere NOAA OVATION globe, Kp, and local probability. WiFi setup like [capsule-radar](https://github.com/socquique/capsule-radar), plus a browser web flasher.
+Northern-hemisphere NOAA OVATION globe, Kp, and local probability. WiFi setup like [capsule-radar](https://github.com/socquique/capsule-radar), plus a browser web flasher with board picker.
 
 Spec: [BRIEF.md](BRIEF.md). Firmware lands on `main` as it is built.
 
 ## Hardware
 
-Waveshare ESP32-S3-Touch-AMOLED-1.43 (466×466). Not the 1.75C.
+Waveshare ESP32-S3-Touch-AMOLED-1.43 and 1.75 (board picker in the web flasher).
 
 ## Data
 
