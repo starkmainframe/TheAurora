@@ -125,7 +125,8 @@ void worker(void*) {
 }
 void requestRefresh() { refresh.store(true); }
 void dataBegin() {
-  filesystemReady = LittleFS.begin(true);
+  // Match the partition Name in partitions.csv; cache paths are mount-relative.
+  filesystemReady = LittleFS.begin(true, "/littlefs", 10, "littlefs");
   lock = xSemaphoreCreateMutex();
   void* memory = heap_caps_malloc(sizeof(Snapshot),MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!memory || !lock) { Serial.println("Data allocation failed"); return; }

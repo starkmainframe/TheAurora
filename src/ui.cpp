@@ -13,7 +13,7 @@ namespace app {
 namespace {
 Arduino_ESP32QSPI bus(board::cs,board::sclk,board::d0,board::d1,board::d2,board::d3);
 Arduino_CO5300 panel(&bus,board::reset,0,board::width,board::height,
-                     board::columnOffset,board::rowOffset,board::columnOffset,board::rowOffset);
+                     board::columnOffset,board::rowOffset,0,0);
 lv_obj_t *screens[3], *globeImage, *hud, *state[3], *kpValue, *kpLabel, *chart, *chartTime,
          *localValue, *coordinates, *forecast, *hint, *setup;
 lv_chart_series_t* series;
