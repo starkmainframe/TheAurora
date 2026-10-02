@@ -6,3 +6,4 @@ web/flash/build.json
 web/flash/globe.png
 .vscode/
 .DS_Store
+tools/.push-auth-ok
