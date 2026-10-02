@@ -12,7 +12,7 @@ North-hemisphere NOAA OVATION aurora, drawn as a circular Earth that fills the r
 
 1. **Globe** (home): northern hemisphere, polar-ish view, aurora energy as green→yellow→red, location pin, HUD with Kp + local probability.
 2. **Kp**: current planetary K-index, 3-hour bars for the last day, simple “quiet / unsettled / storm” label.
-3. **Here**: probability at the saved coordinates (big %, lat/lon, forecast time, “worth going outside” hint from Kp + local %.
+3. **Here**: probability at the saved coordinates (big %), lat/lon, forecast time, “worth going outside” hint from Kp + local %.
 
 Long-press optional later; v1 is swipe only.
 
