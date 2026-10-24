@@ -42,6 +42,18 @@ jobs:
         run: node tests/web.mjs
       - name: Merge and verify both flash images
         run: python tools/package_firmware.py
+      - name: Verify complete Pages artifact
+        run: |
+          node tools/verify_pages.mjs web
+          node tests/pages.mjs web
+      - name: Install browser test tools
+        run: |
+          npm install --prefix build/browser --no-save --package-lock=false playwright@1.59.1
+          build/browser/node_modules/.bin/playwright install --with-deps chromium
+      - name: Verify round preview and flasher in Chromium
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/build/browser/node_modules/playwright/index.mjs
+        run: node tests/browser.mjs web
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-and-render
