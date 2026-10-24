@@ -47,17 +47,26 @@ function freqToken(value) {
   assert.ok(Number.isFinite(hz),`Unsupported flash frequency ${value}`);
   return `${hz/1e6}m`;
 }
+// pioarduino builder/main.py _get_board_flash_mode. Same rule as tools/package_firmware.py.
+function uploadFlashMode(mode, memory) {
+  if(memory==='opi_opi' || memory==='opi_qspi') return 'dout';
+  if(mode==='qio' || mode==='qout') return 'dio';
+  return mode;
+}
 function projectFlash(iniText) {
   const sections=iniSections(iniText);
   const resolved=[];
   for(const env of ['env:esp32-s3-amoled-143','env:esp32-s3-amoled-175']) {
-    const mode=lookup(sections,env,'board_build.flash_mode');
+    const iniMode=lookup(sections,env,'board_build.flash_mode');
+    const memory=lookup(sections,env,'board_build.arduino.memory_type') || '';
     const size=lookup(sections,env,'board_upload.flash_size');
     const freq=freqToken(lookup(sections,env,'board_build.f_flash') || lookup(sections,env,'board_build.f_image'));
-    assert.ok(Object.hasOwn(FLASH_MODE_BYTE,mode),`Unsupported flash mode ${mode}`);
+    const mode=uploadFlashMode(iniMode, memory);
+    assert.ok(Object.hasOwn(FLASH_MODE_BYTE,iniMode),`Unsupported flash mode ${iniMode}`);
+    assert.ok(Object.hasOwn(FLASH_MODE_BYTE,mode),`Unsupported upload flash mode ${mode}`);
     assert.ok(Object.hasOwn(FLASH_SIZE_HIGH,size),`Unsupported flash size ${size}`);
     assert.ok(Object.hasOwn(FLASH_FREQ_LOW,freq),`Unsupported flash frequency ${freq}`);
-    resolved.push({mode,freq,size,modeByte:FLASH_MODE_BYTE[mode],sizeFreqByte:FLASH_SIZE_HIGH[size]|FLASH_FREQ_LOW[freq]});
+    resolved.push({mode,iniMode,memory,freq,size,modeByte:FLASH_MODE_BYTE[mode],sizeFreqByte:FLASH_SIZE_HIGH[size]|FLASH_FREQ_LOW[freq]});
   }
   assert.deepEqual(resolved[0],resolved[1],'Board flash settings differ');
   return resolved[0];
@@ -126,10 +135,14 @@ for(const board of boards) {
     assert.equal(image[offset],0xe9,`Missing ESP image at ${offset}`);
     assert.equal(image.readUInt16LE(offset+12),9,'Image is not ESP32-S3');
   }
-  assert.equal(metadata.flash?.mode,projectFlashSettings.mode,'build.json flash mode must match platformio.ini');
-  assert.equal(metadata.flash.modeByte,projectFlashSettings.modeByte,'build.json flash mode byte must match platformio.ini');
+  assert.equal(metadata.flash?.mode,projectFlashSettings.mode,'build.json flash mode must be the pio upload flash mode');
+  assert.equal(metadata.flash.modeByte,projectFlashSettings.modeByte,'build.json flash mode byte must be the pio upload flash mode');
   assert.equal(built.bootFlashMode,image[2],'Metadata boot flash mode byte does not match the image');
-  assert.equal(image[2],projectFlashSettings.modeByte,`Merged bootloader flash mode byte ${image[2]} must match platformio.ini ${projectFlashSettings.mode} (${projectFlashSettings.modeByte})`);
+  assert.equal(image[2],projectFlashSettings.modeByte,`Merged boot flash mode byte ${image[2]} must be ${projectFlashSettings.mode} (${projectFlashSettings.modeByte}), the mode pio uses for upload`);
+  if(projectFlashSettings.memory==='qio_opi') {
+    assert.equal(projectFlashSettings.iniMode,'qio','memory_type qio_opi keeps board_build.flash_mode qio for the library');
+    assert.equal(image[2],2,'memory_type qio_opi requires merged boot flash mode byte 2 (DIO)');
+  }
   assert.equal(image[3],projectFlashSettings.sizeFreqByte,'Merged bootloader size/frequency must match platformio.ini');
   const appMode=image[0x10000+2];
   assert.ok(Object.values(FLASH_MODE_BYTE).includes(appMode),'Application flash mode byte is invalid');

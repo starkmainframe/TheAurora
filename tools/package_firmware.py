@@ -72,32 +72,49 @@ def flash_freq_token(value):
     return f'{int(hz) // 1000000}m'
 
 
-def flash_settings(ini_text, envs=ENVS):
-    """Return (mode, freq, size) shared by every board environment.
+def upload_flash_mode(mode, memory_type):
+    """Match pioarduino builder/main.py _get_board_flash_mode.
 
-    Read board_build.flash_mode itself. pioarduino's _get_board_flash_mode()
-    rewrites qio and qout to dio before elf2image, and the qio_opi bootloader
-    has CONFIG_ESPTOOLPY_FLASH_MODE_AUTO_DETECT, so it keeps that header.
-    The merged image has to follow the ini, not that downgrade.
+    elf2image and write_flash both use that result. qio and qout become dio so
+    the ROM loads DIO; the qio_opi bootloader then calls bootloader_enable_qio_mode.
+    opi_opi and opi_qspi stay dout. board_build.flash_mode still selects the
+    Arduino library (qio with memory_type qio_opi). It is not the ROM byte.
+    """
+    if memory_type in ('opi_opi', 'opi_qspi'):
+        return 'dout'
+    if mode in ('qio', 'qout'):
+        return 'dio'
+    return mode
+
+
+def flash_settings(ini_text, envs=ENVS):
+    """Return (mode, freq, size) passed to merge_bin for every board.
+
+    mode is the pio upload/elf2image mode, not the raw board_build.flash_mode.
+    Both environments must agree on the raw mode and on this upload mode.
     """
     sections = ini_sections(ini_text)
     resolved = []
+    raw_modes = []
     for env in envs:
         section = env if str(env).startswith('env:') else f'env:{env}'
-        mode = lookup(sections, section, 'board_build.flash_mode')
+        raw_mode = lookup(sections, section, 'board_build.flash_mode')
+        memory = lookup(sections, section, 'board_build.arduino.memory_type') or ''
         size = lookup(sections, section, 'board_upload.flash_size')
         freq = flash_freq_token(
             lookup(sections, section, 'board_build.f_flash')
             or lookup(sections, section, 'board_build.f_image'))
-        if mode not in FLASH_MODE_BYTE:
-            raise SystemExit(f'{section} flash mode {mode!r} is not one of {", ".join(FLASH_MODE_BYTE)}')
+        if raw_mode not in FLASH_MODE_BYTE:
+            raise SystemExit(f'{section} flash mode {raw_mode!r} is not one of {", ".join(FLASH_MODE_BYTE)}')
         if size not in FLASH_SIZE_HIGH:
             raise SystemExit(f'{section} flash size {size!r} is not one of {", ".join(FLASH_SIZE_HIGH)}')
         if freq not in FLASH_FREQ_LOW:
             raise SystemExit(f'{section} flash frequency {freq!r} is not one of {", ".join(FLASH_FREQ_LOW)}')
+        mode = upload_flash_mode(raw_mode, memory)
+        raw_modes.append(raw_mode)
         resolved.append((mode, freq, size))
-    if len(set(resolved)) != 1:
-        raise SystemExit(f'Board flash settings differ: {dict(zip(envs, resolved))}')
+    if len(set(raw_modes)) != 1 or len(set(resolved)) != 1:
+        raise SystemExit(f'Board flash settings differ: raw {dict(zip(envs, raw_modes))} upload {dict(zip(envs, resolved))}')
     return resolved[0]
 
 

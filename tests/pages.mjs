@@ -67,7 +67,8 @@ const cases=[
     const file=join(dir,'firmware-143.bin');
     const bytes=readFileSync(file);
     const before=bytes[2];
-    bytes[2]=(before+1)&3;
+    // qio_opi must boot DIO (byte 2). Force the rejected QIO byte unless it is already there.
+    bytes[2]=before===0?1:0;
     if(bytes[2]===before) throw new Error('mutation did not apply');
     writeFileSync(file,bytes);
     const metaPath=join(dir,'build.json');

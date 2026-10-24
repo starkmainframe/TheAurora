@@ -6,8 +6,33 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
+#include <cstddef>
 #include <cmath>
 #include <cstdlib>
+
+// qio_opi libwifi copies wifi_init_config_t.sta_disconnected_pm from byte 200
+// into g_wifi_menuconfig[72] (wifi_menuconfig_init). ic_init then calls
+// pm_enable_sta_disconnected_power_management(1) only when that byte is set.
+// wifi_hw_start of the STA interface calls pm_disconnected_start, which arms
+// the state machine only if that enable left the PM state non-zero.
+// pm_disconnected_wake returns unless the state byte is 3, then calls ROM
+// 0x40005acc and lands in esp_phy_enable. That is the instruction-fetch fault
+// at _heap_start+0x14. WIFI_INIT_CONFIG_DEFAULT sets the field from
+// CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE. The header says to overwrite
+// that default before esp_wifi_init. useStaticBuffers does not write the field,
+// and on these libs the default TX buffers stay dynamic.
+static_assert(offsetof(wifi_init_config_t, sta_disconnected_pm) == 200,
+              "sta_disconnected_pm moved; wifi_menuconfig_init still reads byte 200");
+
+extern "C" esp_err_t __real_esp_wifi_init(const wifi_init_config_t *config);
+
+extern "C" esp_err_t __wrap_esp_wifi_init(const wifi_init_config_t *config) {
+  if (config == nullptr) return ESP_ERR_INVALID_ARG;
+  wifi_init_config_t cfg = *config;
+  cfg.sta_disconnected_pm = false;
+  return __real_esp_wifi_init(&cfg);
+}
 
 namespace app {
 aurora::Settings settings;
@@ -19,11 +44,6 @@ String ssid, password, token;
 bool ap = false, wasConnected = false;
 uint32_t disconnectedAt = 0, connectedAt = 0, changeAt = 0;
 bool connectPending = false, resetPending = false;
-void keepStaticWifiBuffers() {
-  // wifiLowLevelInit latches this flag and ignores a later change.
-  // networkBegin() calls this on every boot, including an empty NVS.
-  WiFi.useStaticBuffers(true);
-}
 void startAP() {
   if (ap) return;
   WiFi.mode(WIFI_AP_STA);
@@ -108,7 +128,6 @@ void networkBegin() {
   snprintf(randomToken,sizeof(randomToken),"%08lx%08lx%08lx%08lx",(unsigned long)esp_random(),
     (unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random());
   token = randomToken;
-  keepStaticWifiBuffers();
   WiFi.persistent(false); WiFi.mode(WIFI_STA); WiFi.setHostname("theaurora");
   WiFi.setAutoReconnect(true);
   pinMode(0,INPUT_PULLUP);

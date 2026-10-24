@@ -64,42 +64,23 @@ def function_body(src, name):
         raise AssertionError(f'unbalanced function {name}')
     return src[match.end():i - 1]
 
-def enclosing_function(src, index):
-    depth = 0
-    for i in range(index, -1, -1):
-        if src[i] == '}':
-            depth += 1
-        elif src[i] == '{':
-            if depth == 0:
-                found = re.search(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*$', src[:i])
-                if not found:
-                    raise AssertionError('WiFi.useStaticBuffers(true) is not inside a function')
-                return found.group(1)
-            depth -= 1
-    raise AssertionError('WiFi.useStaticBuffers(true) is outside a function')
-
-def check_wifi_boot(network, main):
+def check_wifi_boot(network, main, ini):
     net = strip_comments(network)
-    call = re.search(r'WiFi\s*\.\s*useStaticBuffers\s*\(\s*true\s*\)', net)
-    mode = re.search(r'WiFi\s*\.\s*mode\s*\(', net)
-    if not call:
-        raise AssertionError('WiFi.useStaticBuffers(true) is missing')
-    if not mode or call.start() > mode.start():
-        raise AssertionError('WiFi.useStaticBuffers(true) must appear before the first WiFi.mode')
-    helper = enclosing_function(net, call.start())
-    helper_body = function_body(net, helper)
-    if re.search(r'WiFi\s*\.\s*mode\s*\(', helper_body):
-        raise AssertionError(f'{helper} calls WiFi.mode')
+    if re.search(r'\buseStaticBuffers\s*\(', net):
+        raise AssertionError('useStaticBuffers does not create static TX buffers or clear sta_disconnected_pm')
+    wrap = function_body(net, '__wrap_esp_wifi_init')
+    copy = re.search(r'=\s*\*\s*config\s*;', wrap)
+    assign = re.search(r'sta_disconnected_pm\s*=\s*false\s*;', wrap)
+    real = re.search(r'\b__real_esp_wifi_init\s*\(', wrap)
+    if not copy or not assign or not real or not (copy.start() < assign.start() < real.start()):
+        raise AssertionError('__wrap_esp_wifi_init must copy the config and clear sta_disconnected_pm before __real_esp_wifi_init')
+    if 'offsetof(wifi_init_config_t, sta_disconnected_pm) == 200' not in net:
+        raise AssertionError('sta_disconnected_pm must stay at byte 200, the offset wifi_menuconfig_init reads')
+    if '--wrap=esp_wifi_init' not in ini:
+        raise AssertionError('esp_wifi_init must be wrapped so the library cannot init with disconnected PM on')
     begin = function_body(net, 'networkBegin')
-    invoked = re.search(rf'\b{helper}\s*\(', begin)
-    begin_mode = re.search(r'WiFi\s*\.\s*mode\s*\(', begin)
-    if not invoked or not begin_mode or invoked.start() > begin_mode.start():
-        raise AssertionError('networkBegin must call the static-buffer helper before WiFi.mode')
-    if re.search(r'\breturn\b', begin[:invoked.start()]):
-        raise AssertionError('networkBegin can return before the static-buffer call')
-    empty = begin.find('ssid.isEmpty()')
-    if empty < 0 or begin_mode.start() > empty:
-        raise AssertionError('empty NVS still reaches WiFi.mode before the setup-AP branch')
+    if 'ssid.isEmpty()' not in begin or 'startAP' not in begin:
+        raise AssertionError('empty NVS must still reach startAP')
     setup = function_body(strip_comments(main), 'setup')
     order = [setup.find(name) for name in ('networkBegin', 'uiBegin', 'dataBegin')]
     if any(index < 0 for index in order) or order != sorted(order):
@@ -151,7 +132,12 @@ def load_packager():
     return module
 
 def independent_flash_mode(ini_text, envs=('esp32-s3-amoled-143', 'esp32-s3-amoled-175')):
-    """Raw board_build.flash_mode. This must not apply pio's qio→dio downgrade."""
+    """Return (raw mode, memory type, pio upload mode).
+
+    Upload mode copies builder/main.py _get_board_flash_mode and does not
+    call package_firmware.upload_flash_mode. qio/qout become dio. opi_opi and
+    opi_qspi become dout. The raw mode stays the library selection.
+    """
     sections = {}
     current = None
     for raw in ini_text.splitlines():
@@ -180,23 +166,44 @@ def independent_flash_mode(ini_text, envs=('esp32-s3-amoled-143', 'esp32-s3-amol
                 return body[key]
             queue.extend(part.strip() for part in body.get('extends', '').split(',') if part.strip())
         return None
-    modes = [lookup(f'env:{env}', 'board_build.flash_mode') for env in envs]
-    if any(mode is None for mode in modes) or len(set(modes)) != 1:
-        raise AssertionError(f'board flash modes differ or are missing: {modes}')
-    return modes[0]
+    raw_modes = []
+    memories = []
+    for env in envs:
+        raw_modes.append(lookup(f'env:{env}', 'board_build.flash_mode'))
+        memories.append(lookup(f'env:{env}', 'board_build.arduino.memory_type') or '')
+    if any(mode is None for mode in raw_modes) or len(set(raw_modes)) != 1 or len(set(memories)) != 1:
+        raise AssertionError(f'board flash modes differ or are missing: {raw_modes} {memories}')
+    raw, memory = raw_modes[0], memories[0]
+    if memory in ('opi_opi', 'opi_qspi'):
+        upload = 'dout'
+    elif raw in ('qio', 'qout'):
+        upload = 'dio'
+    else:
+        upload = raw
+    return raw, memory, upload
 
 def check_flash_mode(packager, ini_text):
-    mode, _freq, _size = packager.flash_settings(ini_text)
-    raw = independent_flash_mode(ini_text)
-    if mode != raw:
-        raise AssertionError(f'merge flash_mode {mode} != platformio.ini board_build.flash_mode {raw}')
-    if 'qio_opi' in ini_text and raw != 'qio':
-        raise AssertionError('memory_type qio_opi requires board_build.flash_mode qio')
+    mode, freq, size = packager.flash_settings(ini_text)
+    raw, memory, upload = independent_flash_mode(ini_text)
+    if mode != upload:
+        raise AssertionError(f'merge flash_mode {mode} != pio upload mode {upload} (ini {raw}, memory {memory})')
+    if memory == 'qio_opi':
+        if raw != 'qio':
+            raise AssertionError('memory_type qio_opi requires board_build.flash_mode qio for the library')
+        if mode != 'dio' or packager.header_bytes(mode, freq, size)[0] != 2:
+            raise AssertionError('memory_type qio_opi requires merged boot header byte 2 = DIO')
     tweaked = ini_text.replace('board_build.flash_mode = qio', 'board_build.flash_mode = dout', 1)
     if 'board_build.flash_mode = dout' not in tweaked:
         raise AssertionError('flash-mode derivation fixture did not apply')
     if packager.flash_settings(tweaked)[0] != 'dout':
         raise AssertionError('merge flash_mode is hardcoded and ignores platformio.ini')
+    qout = ini_text.replace('board_build.flash_mode = qio', 'board_build.flash_mode = qout', 1)
+    qout_mode, qout_freq, qout_size = packager.flash_settings(qout)
+    if qout_mode != 'dio' or packager.header_bytes(qout_mode, qout_freq, qout_size)[0] != 2:
+        raise AssertionError('qout must merge as dio, boot header byte 2')
+    opi = ini_text.replace('board_build.arduino.memory_type = qio_opi', 'board_build.arduino.memory_type = opi_qspi', 1)
+    if 'opi_qspi' not in opi or packager.flash_settings(opi)[0] != 'dout':
+        raise AssertionError('opi_qspi must merge as dout')
     disagree = ini_text.replace(
         '[env:esp32-s3-amoled-175]\nextends = amoled_common\n',
         '[env:esp32-s3-amoled-175]\nextends = amoled_common\nboard_build.flash_mode = dio\n',
@@ -219,27 +226,37 @@ def check_firmware_contract():
     main = (root / 'src/main.cpp').read_text()
     data = (root / 'src/data.cpp').read_text()
     ini = (root / 'platformio.ini').read_text()
-    check_wifi_boot(network, main)
+    check_wifi_boot(network, main, ini)
     check_partitions(parse_partitions((root / 'partitions.csv').read_text()), data)
     packager = load_packager()
     check_flash_mode(packager, ini)
     good_net = '''
-    void keepStaticWifiBuffers() { WiFi.useStaticBuffers(true); }
-    void startAP() { WiFi.mode(WIFI_AP_STA); }
-    void networkBegin() { keepStaticWifiBuffers(); WiFi.mode(WIFI_STA); if (ssid.isEmpty()) startAP(); }
+    static_assert(offsetof(wifi_init_config_t, sta_disconnected_pm) == 200, "byte");
+    int __wrap_esp_wifi_init(const wifi_init_config_t *config) {
+      wifi_init_config_t cfg = *config;
+      cfg.sta_disconnected_pm = false;
+      return __real_esp_wifi_init(&cfg);
+    }
+    void startAP() {}
+    void networkBegin() { if (ssid.isEmpty()) startAP(); }
     '''
     good_main = 'void setup() { networkBegin(); uiBegin(); dataBegin(); }'
-    check_wifi_boot(good_net, good_main)
+    good_ini = 'build_flags =\n    -Wl,--wrap=esp_wifi_init\n'
+    check_wifi_boot(good_net, good_main, good_ini)
     expect_failure(check_wifi_boot, good_net.replace(
-        'void keepStaticWifiBuffers() { WiFi.useStaticBuffers(true); }\n    void startAP() { WiFi.mode(WIFI_AP_STA); }',
-        'void startAP() { WiFi.mode(WIFI_AP_STA); }\n    void keepStaticWifiBuffers() { WiFi.useStaticBuffers(true); }'), good_main)
-    expect_failure(check_wifi_boot, good_net.replace('keepStaticWifiBuffers(); WiFi.mode', 'WiFi.mode'), good_main)
-    expect_failure(check_wifi_boot, good_net, 'void setup() { uiBegin(); networkBegin(); dataBegin(); }')
+        'cfg.sta_disconnected_pm = false;\n      return __real_esp_wifi_init(&cfg);',
+        'return __real_esp_wifi_init(&cfg);\n      cfg.sta_disconnected_pm = false;'), good_main, good_ini)
+    expect_failure(check_wifi_boot, good_net.replace(
+        'offsetof(wifi_init_config_t, sta_disconnected_pm) == 200',
+        'offsetof(wifi_init_config_t, sta_disconnected_pm) == 0'), good_main, good_ini)
+    expect_failure(check_wifi_boot, good_net + '\n    void extra() { WiFi.useStaticBuffers(true); }\n', good_main, good_ini)
+    expect_failure(check_wifi_boot, good_net, good_main, 'build_flags =\n    -Iinclude\n')
+    expect_failure(check_wifi_boot, good_net, 'void setup() { uiBegin(); networkBegin(); dataBegin(); }', good_ini)
     expect_failure(check_partitions, parse_partitions(
         'littlefs, data, spiffs, 0xc10000, 0x3f0000,\ncoredump, data, coredump, 0xFF0000, 0x10000,\n'), data)
     expect_failure(check_partitions, parse_partitions(
         'littlefs, data, spiffs, 0xc10000, 0x3e0000,\ncoredump, data, coredump, 0xFF0000, 0x20000,\n'), data)
-    print('Empty NVS: setup -> networkBegin -> WiFi.useStaticBuffers(true) -> WiFi.mode(WIFI_STA) -> startAP.')
+    print('Empty NVS: esp_wifi_init runs with sta_disconnected_pm false, then networkBegin may start STA and startAP.')
     print('uiBegin and LittleFS run only after that. The setup AP log is not reached when WiFi init panics.')
     qemu = [name for name in ('qemu-system-xtensa', 'qemu-system-xtensaeb') if shutil.which(name)]
     if qemu:
@@ -260,7 +277,7 @@ def check_firmware_contract():
         start = int(heap.group(1), 16)
         end = origin + length
         print(f'DRAM {env}: free internal {end - start} bytes (_heap_start {start:#x} .. {end:#x})')
-    print('Firmware contract: static WiFi buffers, flash mode and partition table.')
+    print('Firmware contract: disconnected PM off, DIO boot header for qio_opi, coredump partition kept.')
 
 check_firmware_contract()
 (root / 'build').mkdir(exist_ok=True)
