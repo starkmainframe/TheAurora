@@ -21,9 +21,18 @@ function asset(path,base=flash) {
   return bytes;
 }
 const html=asset('index.html').toString();
-assert.match(html,/<script\b[^>]*type="module"[^>]*src="https:\/\/unpkg\.com\/esp-web-tools@10\.1\.0\/dist\/web\/install-button\.js\?module"/,'Missing pinned ESP Web Tools module');
-assert.match(html,/<esp-web-install-button\b[^>]*id="installer"[^>]*hidden/,'Installer must start hidden');
-assert.match(html,/<button\b[^>]*slot="activate"/,'Missing install activation button');
+function attributes(body) {
+  const attrs=new Map();
+  for(const match of body.matchAll(/([^\s=\/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) attrs.set(match[1],match[2] ?? match[3] ?? match[4] ?? '');
+  return attrs;
+}
+function tags(name) {
+  return [...html.matchAll(new RegExp(`<${name}\\b([^>]*)>`,'g'))].map(match=>attributes(match[1]));
+}
+const espTools='https://unpkg.com/esp-web-tools@10.1.0/dist/web/install-button.js?module';
+assert.ok(tags('script').some(attrs=>attrs.get('type')==='module' && attrs.get('src')===espTools),'Missing pinned ESP Web Tools module');
+assert.ok(tags('esp-web-install-button').some(attrs=>attrs.get('id')==='installer' && attrs.has('hidden')),'Installer must start hidden');
+assert.ok(tags('button').some(attrs=>attrs.get('slot')==='activate'),'Missing install activation button');
 // Check the actual local script, stylesheet and image references, not just fixed filenames.
 for(const [tag] of html.matchAll(/<(?:script|link|img)\b[^>]*>/g)) {
   const path=tag.match(/(?:src|href)="([^"]+)"/)?.[1];
