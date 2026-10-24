@@ -1,6 +1,7 @@
 // Regression cases must fail before an incomplete or corrupt Pages tree can be uploaded.
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {cpSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
@@ -62,6 +63,19 @@ const cases=[
   ['missing module',dir=>rmSync(join(dir,'flasher.js')),/ENOENT/],
   ['missing preview',dir=>rmSync(join(dir,'globe.png')),/ENOENT/],
   ['wrong board mapping',dir=>replaceText(join(dir,'flasher.js'),"'143':'manifest-143.json'","'143':'manifest-175.json'"),/Wrong board manifest/],
+  ['wrong flash mode',dir=>{
+    const file=join(dir,'firmware-143.bin');
+    const bytes=readFileSync(file);
+    const before=bytes[2];
+    bytes[2]=(before+1)&3;
+    if(bytes[2]===before) throw new Error('mutation did not apply');
+    writeFileSync(file,bytes);
+    const metaPath=join(dir,'build.json');
+    const meta=JSON.parse(readFileSync(metaPath,'utf8'));
+    meta.boards['143'].sha256=createHash('sha256').update(bytes).digest('hex');
+    meta.boards['143'].bootFlashMode=bytes[2];
+    writeFileSync(metaPath,JSON.stringify(meta));
+  },/flash mode/],
 ];
 try {
   cpSync(source,pages,{recursive:true});

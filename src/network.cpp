@@ -19,6 +19,11 @@ String ssid, password, token;
 bool ap = false, wasConnected = false;
 uint32_t disconnectedAt = 0, connectedAt = 0, changeAt = 0;
 bool connectPending = false, resetPending = false;
+void keepStaticWifiBuffers() {
+  // wifiLowLevelInit latches this flag and ignores a later change.
+  // networkBegin() calls this on every boot, including an empty NVS.
+  WiFi.useStaticBuffers(true);
+}
 void startAP() {
   if (ap) return;
   WiFi.mode(WIFI_AP_STA);
@@ -103,6 +108,7 @@ void networkBegin() {
   snprintf(randomToken,sizeof(randomToken),"%08lx%08lx%08lx%08lx",(unsigned long)esp_random(),
     (unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random());
   token = randomToken;
+  keepStaticWifiBuffers();
   WiFi.persistent(false); WiFi.mode(WIFI_STA); WiFi.setHostname("theaurora");
   WiFi.setAutoReconnect(true);
   pinMode(0,INPUT_PULLUP);
