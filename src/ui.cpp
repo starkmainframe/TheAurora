@@ -131,7 +131,9 @@ void updateValues() {
   lv_label_set_text(kpValue,kpText); lv_label_set_text(kpLabel,aurora::activity(k));
   lv_obj_set_style_text_color(kpLabel,lv_color_hex(k >= 5 ? 0xffaf83 : 0xa5efbb),0);
   lv_label_set_text(localValue,localText);
-  lv_label_set_text_fmt(coordinates,"%.4f N   %.4f %s",settings.latitude,std::abs(settings.longitude),settings.longitude < 0 ? "W" : "E");
+  char coordinateText[48];
+  snprintf(coordinateText,sizeof(coordinateText),"%.4f N   %.4f %s",settings.latitude,std::abs(settings.longitude),settings.longitude < 0 ? "W" : "E");
+  lv_label_set_text(coordinates,coordinateText);
   lv_label_set_text_fmt(forecast,"Forecast (UTC)\n%s",grid.valid ? grid.forecast : "Awaiting NOAA");
   lv_label_set_text(hint,aurora::outsideHint(k,local));
   lv_chart_set_all_value(chart,series,LV_CHART_POINT_NONE);

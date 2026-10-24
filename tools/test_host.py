@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run the actual firmware's portable parser/renderer under native sanitizers."""
+import ast
 import importlib.util
 import os
 from pathlib import Path
@@ -221,6 +222,129 @@ def expect_failure(func, *args):
         return
     raise AssertionError(f'{getattr(func, "__name__", func)} accepted an invalid fixture')
 
+FLOAT_CONVERSION = re.compile(
+    r"%(?:\d+\$)?[-+ #0']*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|j|z|t|L)?[eEfFgGaA]")
+
+def call_arguments(src, open_index):
+    """Split a call's top-level comma arguments, ignoring strings and nesting."""
+    if src[open_index] != '(':
+        raise AssertionError('call parser needs an opening parenthesis')
+    args, start, depth, i = [], open_index + 1, 0, open_index + 1
+    while i < len(src):
+        char = src[i]
+        if char in '"\'':
+            quote = char
+            i += 1
+            while i < len(src):
+                if src[i] == '\\':
+                    i += 2
+                    continue
+                if src[i] == quote:
+                    break
+                i += 1
+            i += 1
+            continue
+        if char in '([{':
+            depth += 1
+        elif char in ')]}':
+            if depth == 0:
+                if char != ')':
+                    raise AssertionError('unbalanced call')
+                args.append(src[start:i])
+                return args, i
+            depth -= 1
+        elif char == ',' and depth == 0:
+            args.append(src[start:i])
+            start = i + 1
+        i += 1
+    raise AssertionError('unbalanced call')
+
+def string_literal_value(expr):
+    """Return the value of a (possibly concatenated) string literal, else None."""
+    expr = expr.strip()
+    values = []
+    i = 0
+    while i < len(expr):
+        while i < len(expr) and expr[i].isspace():
+            i += 1
+        if i == len(expr):
+            break
+        if expr[i] != '"':
+            return None
+        j = i + 1
+        while j < len(expr):
+            if expr[j] == '\\':
+                j += 2
+                continue
+            if expr[j] == '"':
+                break
+            j += 1
+        if j >= len(expr):
+            return None
+        try:
+            values.append(ast.literal_eval(expr[i:j + 1]))
+        except (SyntaxError, ValueError):
+            return None
+        i = j + 1
+    return ''.join(values) if values else None
+
+def float_conversions(fmt):
+    """Conversions in a printf format that consume a floating-point argument."""
+    found = []
+    i = 0
+    while i < len(fmt):
+        if fmt[i] != '%':
+            i += 1
+            continue
+        if i + 1 < len(fmt) and fmt[i + 1] == '%':
+            i += 2
+            continue
+        match = FLOAT_CONVERSION.match(fmt, i)
+        if match:
+            found.append(match.group(0))
+            i = match.end()
+        else:
+            i += 1
+    return found
+
+def check_lv_float_formats(sources):
+    """Reject LVGL format calls with %f/%e/%g: lv_printf has no float support."""
+    problems = []
+    for name, text in sources.items():
+        clean = strip_comments(text)
+        for match in re.finditer(r'\b(lv_[A-Za-z0-9_]*_fmt|lv_snprintf)\s*\(', clean):
+            args, _ = call_arguments(clean, match.end() - 1)
+            format_index = 2 if match.group(1) == 'lv_snprintf' else 1
+            if len(args) <= format_index:
+                continue
+            fmt = string_literal_value(args[format_index])
+            if fmt is None:
+                continue
+            bad = float_conversions(fmt)
+            if bad:
+                problems.append(f'{name}: {match.group(1)} uses {", ".join(bad)} in {fmt!r}')
+    if problems:
+        raise AssertionError(
+            'LVGL format call with a float conversion (LV_SPRINTF_USE_FLOAT is off): '
+            + '; '.join(problems))
+
+def check_lv_float_format_guard():
+    check_lv_float_formats({'good.cpp': '''
+        void f() {
+          lv_label_set_text_fmt(label, "%s %d", text, count);
+          lv_snprintf(buf, sizeof(buf), "%s", text);
+          /* lv_label_set_text_fmt(label, "%.2f", bad); */
+          lv_label_set_text_fmt(label, "100%%f");
+        }
+    '''})
+    for bad in (
+        'lv_label_set_text_fmt(label, "%.4f N", latitude);',
+        'lv_snprintf(buf, sizeof(buf), "%e", value);',
+        'lv_label_set_text_fmt(label, "%d" "%.2f", count, value);',
+        'lv_label_set_text_fmt(label, "%g", value);',
+    ):
+        expect_failure(check_lv_float_formats, {'bad.cpp': bad})
+
 def check_firmware_contract():
     network = (root / 'src/network.cpp').read_text()
     main = (root / 'src/main.cpp').read_text()
@@ -280,6 +404,16 @@ def check_firmware_contract():
     print('Firmware contract: disconnected PM off, DIO boot header for qio_opi, coredump partition kept.')
 
 check_firmware_contract()
+check_lv_float_format_guard()
+firmware_sources = {
+    str(path.relative_to(root)): path.read_text(errors='replace')
+    for path in sorted((root / 'src').rglob('*'))
+    if path.suffix in ('.cpp', '.h') and path.is_file()
+}
+if not firmware_sources:
+    raise AssertionError('no src/**/*.cpp|*.h files found for the LVGL format check')
+check_lv_float_formats(firmware_sources)
+print(f'LVGL formats: no float conversions in {len(firmware_sources)} src files.')
 (root / 'build').mkdir(exist_ok=True)
 headers = root / '.pio/libdeps/esp32-s3-amoled-143/ArduinoJson/src'
 if not headers.exists():
