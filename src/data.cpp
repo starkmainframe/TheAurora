@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 #include <WiFi.h>
 #include <atomic>
+#include <cstring>
 #include <ctime>
 
 namespace app {
@@ -27,6 +28,42 @@ std::atomic<bool> refresh{true};
 std::atomic<int> pollMinutes{15};
 bool changed = false;
 bool filesystemReady = false;
+// ArduinoJson's File reader asks for one byte at a time. That keeps the
+// priority-1 worker runnable while it parses a ~1 MB grid, starving IDLE0 on
+// core 0. This reader fetches blocks from LittleFS and yields after each one.
+class YieldingFileReader {
+ public:
+  explicit YieldingFileReader(File& file) : file_(file) {}
+  int read() {
+    if (!ensureBuffered()) return -1;
+    return buffer_[position_++];
+  }
+  size_t readBytes(char* target, size_t length) {
+    size_t copied = 0;
+    while (copied < length) {
+      if (!ensureBuffered()) break;
+      const size_t available = buffered_ - position_;
+      const size_t remaining = length - copied;
+      const size_t take = available < remaining ? available : remaining;
+      memcpy(target + copied, buffer_ + position_, take);
+      position_ += take; copied += take;
+    }
+    return copied;
+  }
+ private:
+  bool ensureBuffered() {
+    if (position_ < buffered_) return true;
+    buffered_ = file_.read(buffer_, sizeof(buffer_));
+    position_ = 0;
+    if (!buffered_) return false;
+    // Feed IDLE0 so its task watchdog does not fire during long parses.
+    vTaskDelay(1);
+    return true;
+  }
+  File& file_;
+  size_t position_ = 0, buffered_ = 0;
+  uint8_t buffer_[2048];
+};
 struct Download { File file; size_t bytes = 0, limit = 0; bool failed = false; };
 esp_err_t receive(esp_http_client_event_t* event) {
   if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
@@ -36,6 +73,9 @@ esp_err_t receive(esp_http_client_event_t* event) {
     d->failed = true; return ESP_FAIL;
   }
   d->bytes += event->data_len;
+  // The HTTP client loops over ready socket data without necessarily blocking;
+  // yield once per received chunk as well.
+  vTaskDelay(1);
   return ESP_OK;
 }
 bool download(const char* url, const char* path, size_t limit) {
@@ -62,14 +102,24 @@ bool download(const char* url, const char* path, size_t limit) {
 }
 bool readGrid(const char* path, aurora::Grid& output) {
   File file = LittleFS.open(path,"r"); if (!file) return false;
+  // Keep only what aurora::parseGrid reads: two timestamps and the cell rows.
+  JsonDocument filter;
+  filter["Observation Time"] = true;
+  filter["Forecast Time"] = true;
+  filter["coordinates"][0][0] = true;
+  filter["coordinates"][0][1] = true;
+  filter["coordinates"][0][2] = true;
   JsonDocument doc(&allocator);
-  auto error = deserializeJson(doc,file,DeserializationOption::NestingLimit(5));
+  YieldingFileReader reader(file);
+  auto error = deserializeJson(doc,reader,DeserializationOption::Filter(filter),
+                               DeserializationOption::NestingLimit(5));
   return !error && aurora::parseGrid(doc.as<JsonVariantConst>(),output);
 }
 bool readKp(const char* path, aurora::KpHistory& output) {
   File file = LittleFS.open(path,"r"); if (!file) return false;
   JsonDocument doc(&allocator);
-  auto error = deserializeJson(doc,file,DeserializationOption::NestingLimit(5));
+  YieldingFileReader reader(file);
+  auto error = deserializeJson(doc,reader,DeserializationOption::NestingLimit(5));
   return !error && aurora::parseKp(doc.as<JsonVariantConst>(),output);
 }
 void worker(void*) {

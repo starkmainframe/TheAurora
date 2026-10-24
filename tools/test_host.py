@@ -288,6 +288,50 @@ def string_literal_value(expr):
         i = j + 1
     return ''.join(values) if values else None
 
+FILE_DECLARATION = re.compile(r'\b(?:fs::)?File\s*(?:const\s*)?(?:[&*]\s*)?([A-Za-z_]\w*)')
+
+def check_yielding_file_reads(sources):
+    """deserializeJson must not read a File directly: it starves IDLE0.
+
+    A direct File source makes ArduinoJson pull one byte at a time from
+    LittleFS, so the parser never blocks and the core-0 idle task cannot feed
+    its watchdog. Firmware must pass a reader that reads blocks and yields.
+    """
+    problems = []
+    for name, text in sources.items():
+        clean = strip_comments(text)
+        file_variables = set(FILE_DECLARATION.findall(clean))
+        for match in re.finditer(r'\bdeserializeJson\s*\(', clean):
+            args, _ = call_arguments(clean, match.end() - 1)
+            if len(args) < 2:
+                continue
+            source = args[1]
+            names = set(re.findall(r'\b[A-Za-z_]\w*\b', source))
+            direct_file = re.search(r'\b(?:fs::)?File\b', source)
+            if names & file_variables or direct_file:
+                problems.append(f'{name}: deserializeJson source {source.strip()!r} is a File')
+    if problems:
+        raise AssertionError(
+            'deserializeJson reads a File directly instead of a yielding reader: '
+            + '; '.join(problems))
+
+def check_yielding_file_reads_guard():
+    check_yielding_file_reads({'good.cpp': '''
+        void f() {
+          File file;
+          YieldingFileReader reader(file);
+          deserializeJson(doc, reader, DeserializationOption::NestingLimit(5));
+          /* deserializeJson(doc, file); */
+        }
+    '''})
+    for bad in (
+        'File file; deserializeJson(doc, file);',
+        'fs::File file; deserializeJson(doc, file, DeserializationOption::NestingLimit(5));',
+        'const File& input = open(); deserializeJson(doc, &input);',
+        'deserializeJson(doc, fs::File("x"));',
+    ):
+        expect_failure(check_yielding_file_reads, {'bad.cpp': bad})
+
 def float_conversions(fmt):
     """Conversions in a printf format that consume a floating-point argument."""
     found = []
@@ -354,6 +398,7 @@ def check_firmware_contract():
     check_partitions(parse_partitions((root / 'partitions.csv').read_text()), data)
     packager = load_packager()
     check_flash_mode(packager, ini)
+    check_yielding_file_reads_guard()
     good_net = '''
     static_assert(offsetof(wifi_init_config_t, sta_disconnected_pm) == 200, "byte");
     int __wrap_esp_wifi_init(const wifi_init_config_t *config) {
@@ -402,6 +447,7 @@ def check_firmware_contract():
         end = origin + length
         print(f'DRAM {env}: free internal {end - start} bytes (_heap_start {start:#x} .. {end:#x})')
     print('Firmware contract: disconnected PM off, DIO boot header for qio_opi, coredump partition kept.')
+    print('JSON reads: no direct deserializeJson on a File; only block-reading, yielding readers are allowed.')
 
 check_firmware_contract()
 check_lv_float_format_guard()
@@ -412,6 +458,7 @@ firmware_sources = {
 }
 if not firmware_sources:
     raise AssertionError('no src/**/*.cpp|*.h files found for the LVGL format check')
+check_yielding_file_reads(firmware_sources)
 check_lv_float_formats(firmware_sources)
 print(f'LVGL formats: no float conversions in {len(firmware_sources)} src files.')
 (root / 'build').mkdir(exist_ok=True)
